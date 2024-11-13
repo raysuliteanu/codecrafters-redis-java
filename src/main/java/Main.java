@@ -1,6 +1,7 @@
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 
@@ -26,14 +27,31 @@ public class Main {
 
     private static void handleConnection(final Socket clientSocket) {
         try (var reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()))) {
+            final var outputStream = clientSocket.getOutputStream();
             String input;
             while ((input = reader.readLine()) != null) {
-                if (input.equals("PING")) {
-                    clientSocket.getOutputStream().write("+PONG\r\n".getBytes());
-                    clientSocket.getOutputStream().flush();
+                var totalLineCount = 0;
+                if (input.startsWith("*")) {
+                    totalLineCount = Integer.parseInt(input.substring(1));
+                }
+
+                input = reader.readLine();
+                if (input.startsWith("$")) {
+                    var len = Integer.parseInt(input.substring(1));
+                    input = reader.readLine();
+                    assert input.length() == len;
+                    if (input.equals("PING")) {
+                        handleResponse("PONG", ResponseType.SimpleString, outputStream);
+                    }
+                    else if (input.equals("ECHO")) {
+                        input = reader.readLine();
+                        len = Integer.parseInt(input.substring(1));
+                        input = reader.readLine();
+                        assert input.length() == len;
+                        handleResponse(input, ResponseType.BulkString, outputStream);
+                    }
                 }
             }
-
         }
         catch (IOException e) {
             System.err.println("IOException: " + e.getMessage());
@@ -48,5 +66,29 @@ public class Main {
                 System.err.println("IOException: " + e.getMessage());
             }
         }
+    }
+
+    private static void handleResponse(final String response, final ResponseType responseType, final OutputStream outputStream) {
+        try {
+            String s = switch (responseType) {
+                case SimpleString -> formatSimpleString(response);
+                case BulkString -> formatBulkString(response);
+            };
+
+            outputStream.write(s.getBytes());
+            outputStream.flush();
+        }
+        catch (IOException e) {
+            System.err.println("IOException: " + e.getMessage());
+        }
+    }
+
+    private static String formatSimpleString(final String response) {
+        return "+" + response + "\r\n";
+    }
+
+    private static String formatBulkString(final String response) {
+        var len = response.length();
+        return "$" + len + "\r\n" + response + "\r\n";
     }
 }
