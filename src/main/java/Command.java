@@ -1,6 +1,8 @@
 public enum Command {
     Ping("PING"),
-    Echo("ECHO");
+    Echo("ECHO"),
+    Get("GET"),
+    Set("SET");
 
     private final String name;
 
