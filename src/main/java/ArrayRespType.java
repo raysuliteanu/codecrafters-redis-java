@@ -3,11 +3,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
-public class ArrayRespType extends AbstractRespType {
+public class ArrayRespType implements RespType {
     private final List<RespType> contents = new ArrayList<>();
 
     public ArrayRespType(final List<RespType> value) {
-        super("");
         contents.addAll(value);
     }
 
@@ -16,10 +15,10 @@ public class ArrayRespType extends AbstractRespType {
     }
 
     @Override
-    public String toString() {
+    public String serialize() {
         return "*"
                 + contents.size()
                 + CRLF
-                + contents.stream().map(Object::toString).collect(Collectors.joining());
+                + contents.stream().map(RespType::serialize).collect(Collectors.joining());
     }
 }

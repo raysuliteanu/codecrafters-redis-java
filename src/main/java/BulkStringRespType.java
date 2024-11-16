@@ -1,12 +1,39 @@
-public class BulkStringRespType extends AbstractRespType {
+import java.util.Objects;
+
+public class BulkStringRespType implements RespType {
+    private final String value;
+
     protected BulkStringRespType(final String value) {
-        super(value);
+        this.value = value;
     }
 
     @Override
     public String toString() {
-        var s = super.toString();
-        var len = s.length() - RespType.CRLF.length();
-        return "$" + len + RespType.CRLF + s;
+        return value != null ? value : "";
+    }
+
+    @Override
+    public String serialize() {
+        String formatted = "$" + (value != null ? value.length() : -1) + RespType.CRLF;
+
+        if (value != null) {
+            formatted += value + RespType.CRLF;
+        }
+
+        return formatted;
+    }
+
+    @Override
+    public boolean equals(final Object o) {
+        if (o == null) {
+            return false;
+        }
+        final BulkStringRespType that = (BulkStringRespType) o;
+        return Objects.equals(value, that.value);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(value);
     }
 }

@@ -11,7 +11,17 @@ import java.util.Map;
 import java.util.Objects;
 
 public class Main {
-    private final Map<RespType, RespType> db = new HashMap<>();
+    record TtlValue(RespType value, long ttl) {
+        public TtlValue(final RespType value) {
+            this(value, -1);
+        }
+
+        boolean notExpired() {
+            return ttl == -1 || System.currentTimeMillis() <= ttl;
+        }
+    }
+
+    final Map<RespType, TtlValue> db = new HashMap<>();
 
     public static void main(String[] args) {
         new Main().serve();
@@ -52,21 +62,12 @@ public class Main {
                         var command = contents.getFirst();
                         switch (command) {
                             case BulkStringRespType b -> {
-                                final var commandName = b.toStringSimple();
+                                final var commandName = b.toString();
                                 switch (commandName) {
                                     case "PING" -> handleResponse(new SimpleStringRespType("PONG"), outputStream);
                                     case "ECHO" -> handleResponse(contents.get(1), outputStream);
-                                    case "SET" -> {
-                                        var key = contents.get(1);
-                                        var value = contents.get(2);
-                                        db.put(key, value);
-                                        handleResponse(new SimpleStringRespType("OK"), outputStream);
-                                    }
-                                    case "GET" -> {
-                                        var key = contents.get(1);
-                                        var value = db.get(key);
-                                        handleResponse(value, outputStream);
-                                    }
+                                    case "SET" -> handleSetCommand(contents, outputStream);
+                                    case "GET" -> handleGetCommand(contents, outputStream);
                                 }
                             }
                             default -> throw new IllegalStateException("Unexpected value: " + command);
@@ -91,7 +92,100 @@ public class Main {
         }
     }
 
-    private static RespType handleArrayRespType(String input, final BufferedReader reader) throws IOException {
+    void handleSetCommand(final List<RespType> contents, final OutputStream outputStream) {
+        assert contents.size() >= 3 : "too few args to SET";
+        var key = contents.get(1);
+        var respValue = contents.get(2);
+
+        var ttl = -1L;
+        var setOnlyNotExist = false;
+        var setOnlyExists = false;
+        var getValue = false;
+        var keyTtl = false;
+        if (contents.size() > 3) {
+            for (int i = 3; i < contents.size(); ) {
+                var opt = contents.get(i++).toString().toUpperCase();
+                switch (opt) {
+                    // TODO: the PXAT and EXAT are different from PX and EX but for now just handle the same
+                    // See https://redis.io/docs/latest/commands/set/
+                    case "PX", "PXAT" -> ttl = System.currentTimeMillis() + Long.parseLong(contents.get(i++).toString());
+                    case "EX", "EXAT" -> ttl = System.currentTimeMillis() + Long.parseLong(contents.get(i++).toString()) * 1000;
+                    case "XX" -> setOnlyExists = true;
+                    case "NX" -> setOnlyNotExist = true;
+                    case "KEEPTTL" -> keyTtl = true;
+                    case "GET" -> getValue = true;
+                    default ->
+                            throw new IllegalStateException("Unexpected value: " + opt);
+                }
+            }
+        }
+
+        final var curVal = saveValue(key, respValue, ttl, setOnlyExists, setOnlyNotExist);
+
+        RespType resp;
+        if (curVal != null) {
+            resp = getRespType(getValue, curVal.value());
+        }
+        else {
+            resp = getRespType(getValue, null);
+        }
+
+        handleResponse(resp, outputStream);
+    }
+
+    TtlValue saveValue(final RespType key, final RespType value, final long ttl, final boolean setOnlyExists, final boolean setOnlyNotExist) {
+        var ttlValue = new TtlValue(value, ttl);
+
+        final var curVal = db.get(key);
+
+        if (curVal != null && setOnlyExists) {
+            db.put(key, ttlValue);
+        }
+        else if (curVal == null && setOnlyNotExist) {
+            db.put(key, ttlValue);
+        }
+        else {
+            db.put(key, ttlValue);
+        }
+
+        return curVal;
+    }
+
+    void handleGetCommand(final List<RespType> contents, final OutputStream outputStream) {
+        var key = contents.get(1);
+        var ttlValue = db.get(key);
+        if (ttlValue != null) {
+            if (ttlValue.notExpired()) {
+                handleResponse(ttlValue.value, outputStream);
+            }
+            else {
+                handleResponse(new BulkStringRespType(null), outputStream);
+            }
+        }
+        else {
+            var err = new SimpleErrorRespType("MISSING", "no value for " + key);
+            handleResponse(err, outputStream);
+        }
+    }
+
+    private static RespType getRespType(final boolean getValue, final RespType curVal) {
+        RespType resp;
+        if (getValue) {
+            if (curVal instanceof SimpleStringRespType) {
+                resp = new BulkStringRespType(curVal.toString());
+            }
+            else {
+                resp = new SimpleErrorRespType("WRONGTYPE", "Operation against a key holding the wrong kind of value");
+            }
+        }
+        else {
+            resp = new SimpleStringRespType("OK");
+        }
+
+        return resp;
+    }
+
+    RespType handleArrayRespType(String input, final BufferedReader reader) throws IOException {
         var totalLineCount = Integer.parseInt(input.substring(1));
 
         List<RespType> contents = new ArrayList<>();
@@ -110,9 +204,18 @@ public class Main {
                 var respType = handleArrayRespType(input, reader);
                 contents.add(respType);
             }
+            else if (input.startsWith(":")) {
+                var respType = handleIntegerRespType(input);
+                contents.add(respType);
+            }
         }
 
         return new ArrayRespType(contents);
+    }
+
+    private static RespType handleIntegerRespType(final String input) {
+        final var i = Integer.parseInt(input.substring(1));
+        return null;
     }
 
     private static RespType handleSimpleStringRespType(final String input) {
@@ -129,7 +232,7 @@ public class Main {
 
     private static void handleResponse(final RespType respType, final OutputStream outputStream) {
         try {
-            outputStream.write(Objects.requireNonNull(respType.toString()).getBytes());
+            outputStream.write(Objects.requireNonNull(respType.serialize()).getBytes());
             outputStream.flush();
         }
         catch (IOException e) {
